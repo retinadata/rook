@@ -36,6 +36,19 @@ spec:
               values:
                 - minikube
 ---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: rook-config-override
+  namespace: rook-ceph
+data:
+  config: |
+    [global]
+    osd_pool_default_size = 1
+    mon_warn_on_pool_no_redundancy = false
+    bdev_flock_retry = 20
+    bluefs_buffered_io = false
+---
 apiVersion: ceph.rook.io/v1
 kind: CephCluster
 metadata:
@@ -43,14 +56,12 @@ metadata:
   namespace: rook-ceph
 spec:
   dataDirHostPath: /var/lib/rook
-  mon:
-    count: 1
-    allowMultiplePerNode: true
   cephVersion:
     image: quay.io/ceph/ceph:v16.2.6
     allowUnsupported: true
-  skipUpgradeChecks: false
-  continueUpgradeAfterChecksEvenIfNotHealthy: false
+  mon:
+    count: 1
+    allowMultiplePerNode: true
   mgr:
     count: 1
     allowMultiplePerNode: true
@@ -78,6 +89,10 @@ spec:
               accessModes:
                 - ReadWriteOnce
     onlyApplyOSDPlacement: false
-  resources:
+  healthCheck:
+    daemonHealth:
+      mon:
+        interval: 45s
+        timeout: 600s
   disruptionManagement:
     managePodBudgets: true
