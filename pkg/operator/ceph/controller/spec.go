@@ -49,6 +49,7 @@ const (
 	volumeMountSubPath                      = "data"
 	crashVolumeName                         = "rook-ceph-crash"
 	daemonSocketDir                         = "/run/ceph"
+	daemonSocketVolumeName                  = "rook-ceph-run"
 	logCollector                            = "log-collector"
 	DaemonIDLabel                           = "ceph_daemon_id"
 	daemonTypeLabel                         = "ceph_daemon_type"
@@ -177,6 +178,7 @@ func PodVolumes(dataPaths *config.DataPathMap, dataDirHostPath string, confGener
 		configVolume,
 	}
 	v = append(v, StoredLogAndCrashVolume(dataPaths.HostLogDir(), dataPaths.HostCrashDir())...)
+	v = append(v, DaemonSocketVolume())
 
 	return v
 }
@@ -195,6 +197,7 @@ func CephVolumeMounts(dataPaths *config.DataPathMap, confGeneratedInPod bool) []
 		// Rook doesn't run in ceph containers, so it doesn't need the config override mounted
 	}
 	v = append(v, StoredLogAndCrashVolumeMount(dataPaths.ContainerLogDir(), dataPaths.ContainerCrashDir())...)
+	v = append(v, DaemonSocketVolumeMount())
 
 	return v
 }
@@ -219,6 +222,7 @@ func DaemonVolumesBase(dataPaths *config.DataPathMap, keyringResourceName string
 		// logs are not persisted to host
 		vols = append(vols, StoredLogAndCrashVolume(dataPaths.HostLogDir(), dataPaths.HostCrashDir())...)
 	}
+	vols = append(vols, DaemonSocketVolume())
 	return vols
 }
 
@@ -285,6 +289,7 @@ func DaemonVolumeMounts(dataPaths *config.DataPathMap, keyringResourceName strin
 		// logs are not persisted to host, so no mount is needed
 		mounts = append(mounts, StoredLogAndCrashVolumeMount(dataPaths.ContainerLogDir(), dataPaths.ContainerCrashDir())...)
 	}
+	mounts = append(mounts, DaemonSocketVolumeMount())
 	if dataPaths.ContainerDataDir == "" {
 		// no data is stored in container, so there are no more mounts
 		return mounts
@@ -461,13 +466,14 @@ func ChownCephDataDirsInitContainer(
 	resources v1.ResourceRequirements,
 	securityContext *v1.SecurityContext,
 ) v1.Container {
-	args := make([]string, 0, 5)
+	args := make([]string, 0, 6)
 	args = append(args,
 		"--verbose",
 		"--recursive",
 		"ceph:ceph",
 		config.VarLogCephDir,
 		config.VarLibCephCrashDir,
+		daemonSocketDir,
 	)
 	if dpm.ContainerDataDir != "" {
 		args = append(args, dpm.ContainerDataDir)
@@ -560,6 +566,29 @@ func StoredLogAndCrashVolumeMount(varLogCephDir, varLibCephCrashDir string) []v1
 			ReadOnly:  false,
 			MountPath: varLibCephCrashDir,
 		},
+	}
+}
+
+// DaemonSocketVolume returns a pod volume for daemon admin sockets
+func DaemonSocketVolume() v1.Volume {
+	Type := v1.HostPathDirectoryOrCreate
+	return v1.Volume{
+		Name: daemonSocketVolumeName,
+		VolumeSource: v1.VolumeSource{
+			HostPath: &v1.HostPathVolumeSource{
+				Path: daemonSocketDir,
+				Type: &Type,
+			},
+		},
+	}
+}
+
+// DaemonSocketVolumeMount defines the volume mount for daemon admin sockets
+func DaemonSocketVolumeMount() v1.VolumeMount {
+	return v1.VolumeMount{
+		Name:      daemonSocketVolumeName,
+		ReadOnly:  false,
+		MountPath: daemonSocketDir,
 	}
 }
 
