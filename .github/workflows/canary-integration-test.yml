@@ -31,6 +31,9 @@ jobs:
       with:
         go-version: 1.16
 
+    - name: install deps
+      run: tests/scripts/github-action-helper.sh install_deps
+
     - name: setup minikube
       uses: manusa/actions-setup-minikube@v2.4.2
       with:
@@ -57,7 +60,7 @@ jobs:
       run: tests/scripts/github-action-helper.sh deploy_cluster
 
     - name: wait for prepare pod
-      run: timeout 300 sh -c 'until kubectl -n rook-ceph logs -f $(kubectl -n rook-ceph get pod -l app=rook-ceph-osd-prepare -o jsonpath='{.items[*].metadata.name}'); do sleep 5; done'
+      run: tests/scripts/github-action-helper.sh wait_for_prepare_pod
 
     - name: wait for ceph to be ready
       run: tests/scripts/github-action-helper.sh wait_for_ceph_to_be_ready all 2
@@ -68,7 +71,7 @@ jobs:
         timeout 15 sh -c "until kubectl -n rook-ceph exec $toolbox -- ceph mgr dump -f json|jq --raw-output .active_addr|grep -Eosq \"(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\" ; do sleep 1 && echo 'waiting for the manager IP to be available'; done"
         mgr_raw=$(kubectl -n rook-ceph exec $toolbox -- ceph mgr dump -f json|jq --raw-output .active_addr)
         timeout 60 sh -c "until kubectl -n rook-ceph exec $toolbox -- curl --silent --show-error ${mgr_raw%%:*}:9283; do echo 'waiting for mgr prometheus exporter to be ready' && sleep 1; done"
-        kubectl -n rook-ceph exec $toolbox -- /bin/bash -c "echo \"$(kubectl get pods -o wide -n rook-ceph -l app=rook-ceph-mgr --no-headers=true|head -n1|awk '{print $6"\t"$1}')\" >>/etc/hosts"
+        kubectl -n rook-ceph exec $toolbox -- /bin/bash -c "echo \"$(kubectl get pods -o wide -n rook-ceph -l app=rook-ceph-mgr --no-headers=true|awk 'FNR <= 1'|awk '{print $6"\t"$1}')\" >>/etc/hosts"
         kubectl -n rook-ceph exec $toolbox -- mkdir -p /etc/ceph/test-data
         kubectl -n rook-ceph cp cluster/examples/kubernetes/ceph/test-data/ceph-status-out $toolbox:/etc/ceph/test-data/
         kubectl -n rook-ceph cp cluster/examples/kubernetes/ceph/create-external-cluster-resources.py $toolbox:/etc/ceph
@@ -83,6 +86,26 @@ jobs:
 
     - name: check-ownerreferences
       run: tests/scripts/github-action-helper.sh check_ownerreferences
+
+    - name: test osd removal jobs
+      run: |
+        kubectl -n rook-ceph delete deploy/rook-ceph-operator
+        kubectl -n rook-ceph delete deploy/rook-ceph-osd-1 --grace-period=0 --force
+        sed -i 's/<OSD-IDs>/1/' cluster/examples/kubernetes/ceph/osd-purge.yaml
+        # the CI must force the deletion since we use replica 1 on 2 OSDs
+        sed -i 's/false/true/' cluster/examples/kubernetes/ceph/osd-purge.yaml
+        yq write -i cluster/examples/kubernetes/ceph/osd-purge.yaml "spec.template.spec.containers[0].image" rook/ceph:local-build
+        kubectl -n rook-ceph create -f cluster/examples/kubernetes/ceph/osd-purge.yaml
+        toolbox=$(kubectl get pod -l app=rook-ceph-tools -n rook-ceph -o jsonpath='{.items[*].metadata.name}')
+        kubectl -n rook-ceph exec $toolbox -- ceph status
+        timeout 120 sh -c "until kubectl -n rook-ceph exec $toolbox -- ceph osd tree|grep -qE 'osd.1.*.destroyed'; do echo 'waiting for ceph osd 1 to be destroyed'; sleep 1; done"
+        kubectl -n rook-ceph exec $toolbox -- ceph status
+        kubectl -n rook-ceph exec $toolbox -- ceph osd tree
+
+    - name: collect common logs
+      if: always()
+      run: |
+        tests/scripts/collect-logs.sh
 
     - name: Upload canary test result
       uses: actions/upload-artifact@v2
@@ -148,21 +171,18 @@ jobs:
         tests/scripts/github-action-helper.sh deploy_manifest_with_local_build cluster/examples/kubernetes/ceph/toolbox.yaml
 
     - name: wait for prepare pod
-      run: |
-        timeout 180 sh -c '[ $(kubectl -n rook-ceph get pod -l app=rook-ceph-osd-prepare -o jsonpath='{.items[*].metadata.name}'|wc -l) -eq 2 ]; do sleep 5; done'||true
-        for prepare in $(kubectl -n rook-ceph get pod -l app=rook-ceph-osd-prepare -o jsonpath='{.items[*].metadata.name}'); do
-          kubectl -n rook-ceph logs -f $prepare
-          break
-        done
-        timeout 60 sh -c 'until kubectl -n rook-ceph logs $(kubectl -n rook-ceph get pod -l app=rook-ceph-osd,ceph_daemon_id=0 -o jsonpath='{.items[*].metadata.name}') --all-containers; do echo "waiting for osd container" && sleep 1; done'||true
-        kubectl -n rook-ceph describe job/$prepare||true
-        kubectl -n rook-ceph describe deploy/rook-ceph-osd-0||true
+      run: tests/scripts/github-action-helper.sh wait_for_prepare_pod
 
     - name: wait for ceph to be ready
       run: tests/scripts/github-action-helper.sh wait_for_ceph_to_be_ready osd 2
 
     - name: check-ownerreferences
       run: tests/scripts/github-action-helper.sh check_ownerreferences
+
+    - name: collect common logs
+      if: always()
+      run: |
+        tests/scripts/collect-logs.sh
 
     - name: Upload  pvc test result
       uses: actions/upload-artifact@v2
@@ -230,6 +250,11 @@ jobs:
 
     - name: wait for ceph to be ready
       run: tests/scripts/github-action-helper.sh wait_for_ceph_to_be_ready osd 1
+
+    - name: collect common
+      if: always()
+      run: |
+        tests/scripts/collect-logs.sh
 
     - name: Upload pvc-db test result
       uses: actions/upload-artifact@v2
@@ -302,6 +327,11 @@ jobs:
         tests/scripts/github-action-helper.sh wait_for_ceph_to_be_ready osd 1
         kubectl -n rook-ceph get pods
 
+    - name: collect common logs
+      if: always()
+      run: |
+        tests/scripts/collect-logs.sh
+
     - name: Upload pvc-db-wal test result
       uses: actions/upload-artifact@v2
       if: always()
@@ -371,6 +401,11 @@ jobs:
         tests/scripts/github-action-helper.sh wait_for_ceph_to_be_ready osd 2
         kubectl -n rook-ceph get secrets
         sudo lsblk
+
+    - name: collect common logs
+      if: always()
+      run: |
+        tests/scripts/collect-logs.sh
 
     - name: Upload encryption-pvc test result
       uses: actions/upload-artifact@v2
@@ -442,6 +477,11 @@ jobs:
         kubectl -n rook-ceph get pods
         kubectl -n rook-ceph get secrets
 
+    - name: collect common logs
+      if: always()
+      run: |
+        tests/scripts/collect-logs.sh
+
     - name: Upload encryption-pvc-db-wal test result
       uses: actions/upload-artifact@v2
       if: always()
@@ -512,6 +552,11 @@ jobs:
         tests/scripts/github-action-helper.sh wait_for_ceph_to_be_ready osd 1
         kubectl -n rook-ceph get pods
         kubectl -n rook-ceph get secrets
+
+    - name: collect common logs
+      if: always()
+      run: |
+        tests/scripts/collect-logs.sh
 
     - name: Upload encryption-pvc-db test result
       uses: actions/upload-artifact@v2
@@ -602,6 +647,11 @@ jobs:
       run: |
         tests/scripts/deploy-validate-vault.sh validate_rgw
 
+    - name: collect common logs
+      if: always()
+      run: |
+        tests/scripts/collect-logs.sh
+
     - name: Upload encryption-pvc-kms-vault-token-auth test result
       uses: actions/upload-artifact@v2
       if: always()
@@ -666,6 +716,11 @@ jobs:
 
     - name: check-ownerreferences
       run: tests/scripts/github-action-helper.sh check_ownerreferences
+
+    - name: collect common logs
+      if: always()
+      run: |
+        tests/scripts/collect-logs.sh
 
     - name: Upload pvc test result
       uses: actions/upload-artifact@v2
@@ -789,15 +844,19 @@ jobs:
 
     - name: copy block mirror peer secret into the other cluster for replicapool
       run: |
-        kubectl -n rook-ceph get secret pool-peer-token-replicapool -o yaml |\
-        sed 's/namespace: rook-ceph/namespace: rook-ceph-secondary/g; s/name: pool-peer-token-replicapool/name: pool-peer-token-replicapool-config/g' |\
-        kubectl create --namespace=rook-ceph-secondary -f -
+        kubectl -n rook-ceph get secret pool-peer-token-replicapool -o yaml > pool-peer-token-replicapool.yaml
+        yq delete --inplace pool-peer-token-replicapool.yaml metadata.ownerReferences
+        yq write --inplace pool-peer-token-replicapool.yaml metadata.namespace rook-ceph-secondary
+        yq write --inplace pool-peer-token-replicapool.yaml metadata.name pool-peer-token-replicapool-config
+        kubectl create --namespace=rook-ceph-secondary -f pool-peer-token-replicapool.yaml
 
     - name: copy block mirror peer secret into the other cluster for replicapool2 (using cluster global peer)
       run: |
-        kubectl -n rook-ceph get secret cluster-peer-token-my-cluster -o yaml |\
-        sed 's/namespace: rook-ceph/namespace: rook-ceph-secondary/g; s/name: cluster-peer-token-my-cluster/name: cluster-peer-token-my-cluster-config/g' |\
-        kubectl create --namespace=rook-ceph-secondary -f -
+        kubectl -n rook-ceph get secret cluster-peer-token-my-cluster -o yaml > cluster-peer-token-my-cluster.yaml
+        yq delete --inplace cluster-peer-token-my-cluster.yaml metadata.ownerReferences
+        yq write --inplace cluster-peer-token-my-cluster.yaml metadata.namespace rook-ceph-secondary
+        yq write --inplace cluster-peer-token-my-cluster.yaml metadata.name cluster-peer-token-my-cluster-config
+        kubectl create --namespace=rook-ceph-secondary -f cluster-peer-token-my-cluster.yaml
 
     - name: add block mirror peer secret to the other cluster for replicapool
       run: |
@@ -879,6 +938,11 @@ jobs:
         kubectl -n rook-ceph get cephfilesystem myfs -o yaml
         # the check is not super ideal since 'mirroring_failed' is only displayed when there is a failure but not when it's working...
         timeout 60 sh -c 'while [ "$(kubectl exec -n rook-ceph deploy/rook-ceph-tools -t -- ceph fs snapshot mirror daemon status myfs|jq -r '.[0].filesystems[0]'|grep -c "mirroring_failed")" -eq 1 ]; do echo "waiting for filesystem to be mirrored" && sleep 1; done'
+
+    - name: collect common logs
+      if: always()
+      run: |
+        tests/scripts/collect-logs.sh
 
     - name: upload test result
       uses: actions/upload-artifact@v2

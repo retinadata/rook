@@ -57,16 +57,35 @@ function use_local_disk() {
 }
 
 function use_local_disk_for_integration_test() {
+  sudo udevadm control --log-priority=debug
   sudo swapoff --all --verbose
   sudo umount /mnt
+  sudo sed -i.bak '/\/mnt/d' /etc/fstab
   # search for the device since it keeps changing between sda and sdb
   PARTITION="${BLOCK}1"
   sudo wipefs --all --force "$PARTITION"
-  sudo lsblk
+  sudo dd if=/dev/zero of="${PARTITION}" bs=1M count=1
+  sudo lsblk --bytes
   # add a udev rule to force the disk partitions to ceph
   # we have observed that some runners keep detaching/re-attaching the additional disk overriding the permissions to the default root:disk
   # for more details see: https://github.com/rook/rook/issues/7405
   echo "SUBSYSTEM==\"block\", ATTR{size}==\"29356032\", ACTION==\"add\", RUN+=\"/bin/chown 167:167 $PARTITION\"" | sudo tee -a /etc/udev/rules.d/01-rook.rules
+  # for below, see: https://access.redhat.com/solutions/1465913
+  block_base="$(basename "${BLOCK}")"
+  echo "ACTION==\"add|change\", KERNEL==\"${block_base}\", OPTIONS:=\"nowatch\"" | sudo tee -a /etc/udev/rules.d/99-z-rook-nowatch.rules
+  # The partition is still getting reloaded occasionally during operation. See https://github.com/rook/rook/issues/8975
+  # Try issuing some disk-inspection commands to jog the system so it won't reload the partitions
+  # during OSD provisioning.
+  sudo udevadm control --reload-rules || true
+  sudo udevadm trigger || true
+  time sudo udevadm settle || true
+  sudo partprobe || true
+  sudo lsblk --noheadings --pairs "${BLOCK}" || true
+  sudo sgdisk --print "${BLOCK}" || true
+  sudo udevadm info --query=property "${BLOCK}" || true
+  sudo lsblk --noheadings --pairs "${PARTITION}" || true
+  journalctl -o short-precise --dmesg | tail -40 || true
+  cat /etc/fstab || true
 }
 
 function create_partitions_for_osds() {
@@ -87,6 +106,14 @@ function create_bluestore_partitions_and_pvcs_for_wal(){
   WAL_PART="$BLOCK"2
   tests/scripts/create-bluestore-partitions.sh --disk "$BLOCK" --bluestore-type block.wal --osd-count 1
   tests/scripts/localPathPV.sh "$BLOCK_PART" "$DB_PART" "$WAL_PART"
+}
+
+function collect_udev_logs_in_background() {
+  local log_dir="${1:-"/home/runner/work/rook/rook/tests/integration/_output/tests"}"
+  mkdir -p "${log_dir}"
+  udevadm monitor --property &> "${log_dir}"/udev-monitor-property.txt &
+  udevadm monitor --kernel &> "${log_dir}"/udev-monitor-kernel.txt &
+  udevadm monitor --udev &> "${log_dir}"/udev-monitor-udev.txt &
 }
 
 function build_rook() {
@@ -136,7 +163,21 @@ function build_rook_all() {
 
 function validate_yaml() {
   cd cluster/examples/kubernetes/ceph
+
+  # create the Rook CRDs and other resources
   kubectl create -f crds.yaml -f common.yaml
+
+  # create the volume replication CRDs
+  replication_version=v0.1.0
+  replication_url="https://raw.githubusercontent.com/csi-addons/volume-replication-operator/${replication_version}/config/crd/bases"
+  kubectl create -f "${replication_url}/replication.storage.openshift.io_volumereplications.yaml"
+  kubectl create -f "${replication_url}/replication.storage.openshift.io_volumereplicationclasses.yaml"
+
+  #create the KEDA CRDS
+  keda_version=2.4.0
+  keda_url="https://github.com/kedacore/keda/releases/download/v${keda_version}/keda-${keda_version}.yaml"
+  kubectl apply -f "${keda_url}"
+
   # skipping folders and some yamls that are only for openshift.
   manifests="$(find . -maxdepth 1 -type f -name '*.yaml' -and -not -name '*openshift*' -and -not -name 'scc.yaml')"
   with_f_arg="$(echo "$manifests" | awk '{printf " -f %s",$1}')" # don't add newline
@@ -149,7 +190,7 @@ function create_cluster_prerequisites() {
 }
 
 function deploy_manifest_with_local_build() {
-  sed -i "s|image: rook/ceph:v1.7.5|image: rook/ceph:local-build|g" $1
+  sed -i "s|image: rook/ceph:v1.7.11|image: rook/ceph:local-build|g" $1
   kubectl create -f $1
 }
 
@@ -168,10 +209,31 @@ function deploy_cluster() {
 }
 
 function wait_for_prepare_pod() {
-  timeout 180 sh -c 'until kubectl -n rook-ceph logs -f job/$(kubectl -n rook-ceph get job -l app=rook-ceph-osd-prepare -o jsonpath='{.items[0].metadata.name}'); do sleep 5; done' || true
-  timeout 60 sh -c 'until kubectl -n rook-ceph logs $(kubectl -n rook-ceph get pod -l app=rook-ceph-osd,ceph_daemon_id=0 -o jsonpath='{.items[*].metadata.name}') --all-containers; do echo "waiting for osd container" && sleep 1; done' || true
-  kubectl -n rook-ceph describe job/$(kubectl -n rook-ceph get pod -l app=rook-ceph-osd-prepare -o jsonpath='{.items[*].metadata.name}') || true
-  kubectl -n rook-ceph describe deploy/rook-ceph-osd-0 || true
+  get_pod_cmd=(kubectl --namespace rook-ceph get pod --no-headers)
+  timeout=450
+  start_time="${SECONDS}"
+  while [[ $(( SECONDS - start_time )) -lt $timeout ]]; do
+    pod="$("${get_pod_cmd[@]}" --selector=app=rook-ceph-osd-prepare --output custom-columns=NAME:.metadata.name,PHASE:status.phase | awk 'FNR <= 1')"
+    if echo "$pod" | grep 'Running\|Succeeded\|Failed'; then break; fi
+    echo 'waiting for at least one osd prepare pod to be running or finished'
+    sleep 5
+  done
+  pod="$("${get_pod_cmd[@]}" --selector app=rook-ceph-osd-prepare --output name | awk 'FNR <= 1')"
+  kubectl --namespace rook-ceph logs --follow "$pod"
+  timeout=60
+  start_time="${SECONDS}"
+  while [[ $(( SECONDS - start_time )) -lt $timeout ]]; do
+    pod="$("${get_pod_cmd[@]}" --selector app=rook-ceph-osd,ceph_daemon_id=0 --output custom-columns=NAME:.metadata.name,PHASE:status.phase)"
+    if echo "$pod" | grep 'Running'; then break; fi
+    echo 'waiting for OSD 0 pod to be running'
+    sleep 1
+  done
+  # getting the below logs is a best-effort attempt, so use '|| true' to allow failures
+  pod="$("${get_pod_cmd[@]}" --selector app=rook-ceph-osd,ceph_daemon_id=0 --output name)" || true
+  kubectl --namespace rook-ceph logs "$pod" || true
+  job="$(kubectl --namespace rook-ceph get job --selector app=rook-ceph-osd-prepare --output name | awk 'FNR <= 1')" || true
+  kubectl -n rook-ceph describe "$job" || true
+  kubectl -n rook-ceph describe deployment/rook-ceph-osd-0 || true
 }
 
 function wait_for_ceph_to_be_ready() {

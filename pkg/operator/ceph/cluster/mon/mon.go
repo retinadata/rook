@@ -347,7 +347,21 @@ func (c *Cluster) ConfigureArbiter() error {
 	if err != nil {
 		logger.Warningf("attempting to enable arbiter after failed to detect if already enabled. %v", err)
 	} else if monDump.StretchMode {
-		logger.Infof("stretch mode is already enabled")
+		// only support arbiter failover if at least v16.2.7
+		if !c.ClusterInfo.CephVersion.IsAtLeast(arbiterFailoverSupportedCephVersion) {
+			logger.Info("stretch mode is already enabled")
+			return nil
+		}
+
+		if monDump.TiebreakerMon == c.arbiterMon {
+			logger.Infof("stretch mode is already enabled with tiebreaker %q", c.arbiterMon)
+			return nil
+		}
+		// Set the new mon tiebreaker
+		logger.Infof("updating tiebreaker mon from %q to %q", monDump.TiebreakerMon, c.arbiterMon)
+		if err := cephclient.SetNewTiebreaker(c.context, c.ClusterInfo, c.arbiterMon); err != nil {
+			return errors.Wrap(err, "failed to set new mon tiebreaker")
+		}
 		return nil
 	}
 

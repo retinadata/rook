@@ -42,7 +42,7 @@ spec:
         severity_level: critical
         storage_type: ceph
       expr: |
-        up{job="rook-ceph-mgr"} == 0
+        label_replace((up{job="rook-ceph-mgr"} == 0 or absent(up{job="rook-ceph-mgr"})), "namespace", "openshift-storage", "", "")
       for: 5m
       labels:
         severity: critical
@@ -53,7 +53,7 @@ spec:
         severity_level: warning
         storage_type: ceph
       expr: |
-        sum(up{job="rook-ceph-mgr"}) by (namespace) < 1
+        sum(kube_deployment_spec_replicas{deployment=~"rook-ceph-mgr-.*"}) by (namespace) < 1
       for: 5m
       labels:
         severity: warning
@@ -81,6 +81,17 @@ spec:
       expr: |
         count(ceph_mon_quorum_status{job="rook-ceph-mgr"} == 1) by (namespace) <= (floor(count(ceph_mon_metadata{job="rook-ceph-mgr"}) by (namespace) / 2) + 1)
       for: 15m
+      labels:
+        severity: critical
+    - alert: CephMonQuorumLost
+      annotations:
+        description: Storage cluster quorum is lost. Contact Support.
+        message: Storage quorum is lost
+        severity_level: critical
+        storage_type: ceph
+      expr: |
+        count(kube_pod_status_phase{pod=~"rook-ceph-mon-.*", phase=~"Running|running"} == 1) by (namespace) < 2
+      for: 5m
       labels:
         severity: critical
     - alert: CephMonHighNumberOfLeaderChanges
@@ -263,7 +274,7 @@ spec:
         severity_level: warning
         storage_type: ceph
       expr: |
-        count(count(ceph_mon_metadata{job="rook-ceph-mgr"}) by (ceph_version)) > 1
+        count(count(ceph_mon_metadata{job="rook-ceph-mgr", ceph_version != ""}) by (ceph_version)) > 1
       for: 10m
       labels:
         severity: warning

@@ -316,6 +316,32 @@ func (c *Cluster) reconcileServices(activeDaemon string) error {
 		}
 	}
 
+	return c.updateServiceSelectors(activeDaemon)
+}
+
+// Make a best effort to update the services that have been labeled for being updated
+// when the mgr has changed. They might be services for node ports, ingress, etc
+func (c *Cluster) updateServiceSelectors(activeDaemon string) error {
+	selector := metav1.ListOptions{LabelSelector: "app=rook-ceph-mgr"}
+	services, err := c.context.Clientset.CoreV1().Services(c.clusterInfo.Namespace).List(context.TODO(), selector)
+	if err != nil {
+		return errors.Wrap(err, "failed to query mgr services to update")
+	}
+	for i, service := range services.Items {
+		// Update the selector on the service to point to the active mgr
+		if service.Spec.Selector[controller.DaemonIDLabel] == activeDaemon {
+			logger.Infof("no need to update service %q", service.Name)
+			continue
+		}
+		// Update the service to point to the new active mgr
+		service.Spec.Selector[controller.DaemonIDLabel] = activeDaemon
+		logger.Infof("updating selector on mgr service %q to active mgr %q", service.Name, activeDaemon)
+		if _, err := c.context.Clientset.CoreV1().Services(c.clusterInfo.Namespace).Update(context.TODO(), &services.Items[i], metav1.UpdateOptions{}); err != nil {
+			logger.Errorf("failed to update service %q. %v", service.Name, err)
+		} else {
+			logger.Infof("service %q successfully updated to active mgr %q", service.Name, activeDaemon)
+		}
+	}
 	return nil
 }
 
@@ -365,14 +391,18 @@ func (c *Cluster) enableCrashModule() error {
 func (c *Cluster) enableBalancerModule() error {
 	// The order MATTERS, always configure this module first, then turn it on
 
-	// This sets min compat client to luminous and the balancer module mode
-	err := cephclient.ConfigureBalancerModule(c.context, c.clusterInfo, balancerModuleMode)
-	if err != nil {
-		return errors.Wrapf(err, "failed to configure module %q", balancerModuleName)
+	// This enables the balancer module mode only in versions older than Pacific
+	// This let's the user change the default mode if desired
+	if !c.clusterInfo.CephVersion.IsAtLeastPacific() {
+		// This sets min compat client to luminous and the balancer module mode
+		err := cephclient.ConfigureBalancerModule(c.context, c.clusterInfo, balancerModuleMode)
+		if err != nil {
+			return errors.Wrapf(err, "failed to configure module %q", balancerModuleName)
+		}
 	}
 
 	// This turns "on" the balancer
-	err = cephclient.MgrEnableModule(c.context, c.clusterInfo, balancerModuleName, false)
+	err := cephclient.MgrEnableModule(c.context, c.clusterInfo, balancerModuleName, false)
 	if err != nil {
 		return errors.Wrapf(err, "failed to turn on mgr %q module", balancerModuleName)
 	}
@@ -465,7 +495,7 @@ func (c *Cluster) EnableServiceMonitor(activeDaemon string) error {
 	}
 	serviceMonitor.SetName(AppName)
 	serviceMonitor.SetNamespace(c.clusterInfo.Namespace)
-	cephv1.GetMonitoringLabels(c.spec.Labels).ApplyToObjectMeta(&serviceMonitor.ObjectMeta)
+	cephv1.GetMonitoringLabels(c.spec.Labels).OverwriteApplyToObjectMeta(&serviceMonitor.ObjectMeta)
 
 	if c.spec.External.Enable {
 		serviceMonitor.Spec.Endpoints[0].Port = controller.ServiceExternalMetricName
@@ -501,7 +531,7 @@ func (c *Cluster) DeployPrometheusRule(name, namespace string) error {
 	if err != nil {
 		return errors.Wrapf(err, "failed to set owner reference to prometheus rule %q", prometheusRule.Name)
 	}
-	cephv1.GetMonitoringLabels(c.spec.Labels).ApplyToObjectMeta(&prometheusRule.ObjectMeta)
+	cephv1.GetMonitoringLabels(c.spec.Labels).OverwriteApplyToObjectMeta(&prometheusRule.ObjectMeta)
 	if _, err := k8sutil.CreateOrUpdatePrometheusRule(prometheusRule); err != nil {
 		return errors.Wrap(err, "prometheus rule could not be deployed")
 	}

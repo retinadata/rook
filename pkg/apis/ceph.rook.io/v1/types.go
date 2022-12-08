@@ -602,9 +602,10 @@ type PoolSpec struct {
 	// +nullable
 	DeviceClass string `json:"deviceClass,omitempty"`
 
+	// DEPRECATED: use Parameters instead, e.g., Parameters["compression_mode"] = "force"
 	// The inline compression mode in Bluestore OSD to set to (options are: none, passive, aggressive, force)
 	// +kubebuilder:validation:Enum=none;passive;aggressive;force;""
-	// +kubebuilder:default=none
+	// Do NOT set a default value for kubebuilder as this will override the Parameters
 	// +optional
 	// +nullable
 	CompressionMode string `json:"compressionMode,omitempty"`
@@ -916,14 +917,15 @@ type QuotaSpec struct {
 
 // ErasureCodedSpec represents the spec for erasure code in a pool
 type ErasureCodedSpec struct {
-	// Number of coding chunks per object in an erasure coded storage pool (required for erasure-coded pool type)
+	// Number of coding chunks per object in an erasure coded storage pool (required for erasure-coded pool type).
+	// This is the number of OSDs that can be lost simultaneously before data cannot be recovered.
 	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=9
 	CodingChunks uint `json:"codingChunks"`
 
-	// Number of data chunks per object in an erasure coded storage pool (required for erasure-coded pool type)
+	// Number of data chunks per object in an erasure coded storage pool (required for erasure-coded pool type).
+	// The number of chunks required to recover an object when any single OSD is lost is the same
+	// as dataChunks so be aware that the larger the number of data chunks, the higher the cost of recovery.
 	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=9
 	DataChunks uint `json:"dataChunks"`
 
 	// The algorithm for erasure coding
@@ -1285,6 +1287,8 @@ type BucketHealthCheckSpec struct {
 	Bucket HealthCheckSpec `json:"bucket,omitempty"`
 	// +optional
 	LivenessProbe *ProbeSpec `json:"livenessProbe,omitempty"`
+	// +optional
+	ReadinessProbe *ProbeSpec `json:"readinessProbe,omitempty"`
 }
 
 // HealthCheckSpec represents the health check of an object store bucket
@@ -1619,7 +1623,9 @@ type CephNFSList struct {
 // NFSGaneshaSpec represents the spec of an nfs ganesha server
 type NFSGaneshaSpec struct {
 	// RADOS is the Ganesha RADOS specification
-	RADOS GaneshaRADOSSpec `json:"rados"`
+	// +nullable
+	// +optional
+	RADOS GaneshaRADOSSpec `json:"rados,omitempty"`
 
 	// Server is the Ganesha Server specification
 	Server GaneshaServerSpec `json:"server"`
@@ -1627,8 +1633,16 @@ type NFSGaneshaSpec struct {
 
 // GaneshaRADOSSpec represents the specification of a Ganesha RADOS object
 type GaneshaRADOSSpec struct {
-	// Pool is the RADOS pool where NFS client recovery data is stored.
-	Pool string `json:"pool"`
+	// Pool used to represent the Ganesha's pool name in version older than 16.2.7
+	// As of Ceph Pacific 16.2.7, NFS Ganesha's pool name is hardcoded to ".nfs", so this
+	// setting will be ignored.
+	// +optional
+	Pool string `json:"pool,omitempty"`
+
+	// PoolConfig is the RADOS pool where Ganesha data is stored.
+	// +nullable
+	// +optional
+	PoolConfig *PoolSpec `json:"poolConfig,omitempty"`
 
 	// Namespace is the RADOS namespace where NFS client recovery data is stored.
 	Namespace string `json:"namespace"`

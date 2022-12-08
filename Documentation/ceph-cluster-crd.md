@@ -196,7 +196,10 @@ If this value is empty, each pod will get an ephemeral directory to store their 
 * `mon`: contains mon related options [mon settings](#mon-settings)
 For more details on the mons and when to choose a number other than `3`, see the [mon health doc](ceph-mon-health.md).
 * `mgr`: manager top level section
-  * `count`: set number of ceph managers between `1` to `2`. The default value is 1. This is only needed if plural ceph managers are needed.
+  * `count`: set number of ceph managers between `1` to `2`. The default value is 1. This is only needed if two ceph managers are needed.
+    If there are two managers, it is important for all mgr services point to the active mgr and not the passive mgr. Therefore, Rook will
+    automatically update all services (in the cluster namespace) that have a label `app=rook-ceph-mgr` with a selector pointing to the
+    active mgr. This commonly applies to services for the dashboard or the prometheus metrics collector.
   * `modules`: is the list of Ceph manager modules to enable
 * `crashCollector`: The settings for crash collector daemon(s).
   * `disable`: is set to `true`, the crash collector will not run on any node where a Ceph daemon runs
@@ -221,6 +224,7 @@ For more details on the mons and when to choose a number other than `3`, see the
   * `onlyApplyOSDPlacement`: Whether the placement specific for OSDs is merged with the `all` placement. If `false`, the OSD placement will be merged with the `all` placement. If true, the `OSD placement will be applied` and the `all` placement will be ignored. The placement for OSDs is computed from several different places depending on the type of OSD:
     - For non-PVCs: `placement.all` and `placement.osd`
     - For PVCs: `placement.all` and inside the storageClassDeviceSet from the `placement` or `preparePlacement`
+* `disruptionManagement`: The section for configuring management of daemon disruptions
   * `managePodBudgets`: if `true`, the operator will create and manage PodDisruptionBudgets for OSD, Mon, RGW, and MDS daemons. OSD PDBs are managed dynamically via the strategy outlined in the [design](https://github.com/rook/rook/blob/master/design/ceph/ceph-managed-disruptionbudgets.md). The operator will block eviction of OSDs by default and unblock them safely when drains are detected.
   * `osdMaintenanceTimeout`: is a duration in minutes that determines how long an entire failureDomain like `region/zone/host` will be held in `noout` (in addition to the default DOWN/OUT interval) when it is draining. This is only relevant when  `managePodBudgets` is `true`. The default value is `30` minutes.
   * `manageMachineDisruptionBudgets`: if `true`, the operator will create and manage MachineDisruptionBudgets to ensure OSDs are only fenced when the cluster is healthy. Only available on OpenShift.
@@ -517,6 +521,8 @@ You can set annotations / labels for Rook components for the list of key value p
 * `mon`: Set annotations / labels for mons
 * `osd`: Set annotations / labels for OSDs
 * `prepareosd`: Set annotations / labels for OSD Prepare Jobs
+* `monitoring`: Set annotations / labels for service monitor
+* `crashcollector`: Set annotations / labels for crash collectors
 When other keys are set, `all` will be merged together with the specific component.
 
 ### Placement Configuration Settings

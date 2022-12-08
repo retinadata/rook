@@ -8,6 +8,9 @@ operatorNamespace: rook-ceph
 # The metadata.name of the CephCluster CR. The default name is the same as the namespace.
 # clusterName: rook-ceph
 
+# Ability to override the kubernetes version used in rendering the helm chart
+# kubeVersion: 1.21
+
 # Ability to override ceph.conf
 # configOverride: |
 #   [global]
@@ -95,6 +98,8 @@ cephClusterSpec:
     # urlPrefix: /ceph-dashboard
     # serve the dashboard at the given port.
     # port: 8443
+    # serve the dashboard using SSL
+    ssl: true
 
   # Network configuration, see: https://github.com/rook/rook/blob/master/Documentation/ceph-cluster-crd.md#network-configuration-settings
   # network:
@@ -321,6 +326,7 @@ cephBlockPools:
       isDefault: true
       reclaimPolicy: Delete
       allowVolumeExpansion: true
+      mountOptions: []
       # see https://github.com/rook/rook/blob/master/Documentation/ceph-block.md#provision-storage for available configuration
       parameters:
         # (optional) mapOptions is a comma-separated list of map options.
@@ -372,6 +378,8 @@ cephFileSystems:
       isDefault: false
       name: ceph-filesystem
       reclaimPolicy: Delete
+      allowVolumeExpansion: true
+      mountOptions: []
       # see https://github.com/rook/rook/blob/master/Documentation/ceph-filesystem.md#provision-storage for available configuration
       parameters:
         # The secrets contain Ceph admin credentials.

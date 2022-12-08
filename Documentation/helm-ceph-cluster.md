@@ -57,6 +57,7 @@ The following tables lists the configurable parameters of the rook-operator char
 | Parameter              | Description                                                          | Default     |
 | ---------------------- | -------------------------------------------------------------------- | ----------- |
 | `operatorNamespace`    | Namespace of the Rook Operator                                       | `rook-ceph` |
+| `kubeVersion`          | Optional override of the target kubernetes version                   | ``          |
 | `configOverride`       | Cluster ceph.conf override                                           | <empty>     |
 | `toolbox.enabled`      | Enable Ceph debugging pod deployment. See [toolbox](ceph-toolbox.md) | `false`     |
 | `toolbox.tolerations`  | Toolbox tolerations                                                  | `[]`        |
@@ -87,6 +88,7 @@ The `cephBlockPools` array in the values file will define a list of CephBlockPoo
 | `storageClass.parameters`           | See [Block Storage](ceph-block.md) documentation or the helm values.yaml for suitable values                                                                                                                            | see values.yaml  |
 | `storageClass.reclaimPolicy`        | The default [Reclaim Policy](https://kubernetes.io/docs/concepts/storage/storage-classes/#reclaim-policy) to apply to PVCs created with this storage class.                                                             | `Delete`         |
 | `storageClass.allowVolumeExpansion` | Whether [volume expansion](https://kubernetes.io/docs/concepts/storage/storage-classes/#allow-volume-expansion) is allowed by default.                                                                                  | `true`           |
+| `storageClass.mountOptions`         | Specifies the mount options for storageClass                                                                                                                                                                            | `[]`             |
 
 ### Ceph File Systems
 
@@ -100,6 +102,7 @@ The `cephFileSystems` array in the values file will define a list of CephFileSys
 | `storageClass.name`          | The name of the storage class                                                                                                                               | `ceph-filesystem` |
 | `storageClass.parameters`    | See [Shared Filesystem](ceph-filesystem.md) documentation or the helm values.yaml for suitable values                                                       | see values.yaml   |
 | `storageClass.reclaimPolicy` | The default [Reclaim Policy](https://kubernetes.io/docs/concepts/storage/storage-classes/#reclaim-policy) to apply to PVCs created with this storage class. | `Delete`          |
+| `storageClass.mountOptions`  | Specifies the mount options for storageClass                                                                                                                | `[]`              |
 
 ### Ceph Object Stores
 
