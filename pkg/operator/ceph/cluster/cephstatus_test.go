@@ -227,7 +227,7 @@ func TestConfigureHealthSettings(t *testing.T) {
 	}{
 		{"no-warnings", args{cephclient.CephStatus{}, false}},
 		{"no-action-one-warning", args{noActionOneWarningStatus, false}},
-		{"disable-insecure-global-id", args{disableInsecureGlobalIDStatus, true}},
+		{"disable-insecure-global-id", args{disableInsecureGlobalIDStatus, false}},
 		{"no-disable-insecure-global-id", args{noDisableInsecureGlobalIDStatus, false}},
 	}
 	for _, tt := range tests {
